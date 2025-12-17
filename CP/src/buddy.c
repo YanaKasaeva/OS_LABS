@@ -22,6 +22,7 @@ static size_t size_to_order(size_t size) {
     size_t order = MIN_ORDER;
     size_t block_size = 1UL << order;
     while (block_size < size + sizeof(BuddyBlock)) {
+        if (order >= MAX_ORDER) return 0;
         block_size <<= 1;
         order++;
     }
@@ -39,14 +40,27 @@ static BuddyBlock* get_buddy(void *base, BuddyBlock *block) {
 }
 
 Allocator* buddy_create(void *memory, size_t size) {
+    if (size < (1UL << MIN_ORDER) + sizeof(Allocator)) return NULL;
+    
     Allocator *a = (Allocator*)memory;
     memset(a->free_lists, 0, sizeof(a->free_lists));
-    a->memory_start = memory;
+    
+    // ИСПРАВЛЕНИЕ 1: memory_start указывает на начало пользовательской памяти
+    a->memory_start = (char*)memory + sizeof(Allocator);
+    
+    // ИСПРАВЛЕНИЕ 2: total_memory - только пользовательская память
     a->total_memory = size - sizeof(Allocator);
+    
+    // ИСПРАВЛЕНИЕ 3: used_memory начинается с 0
     a->used_memory = 0;
 
-    size_t order = size_to_order(a->total_memory);
-    BuddyBlock *b = (BuddyBlock*)((char*)memory + sizeof(Allocator));
+    size_t max_possible = a->total_memory;
+    size_t order = MIN_ORDER;
+    while (order < MAX_ORDER && (1UL << (order + 1)) <= max_possible) {
+        order++;
+    }
+    
+    BuddyBlock *b = (BuddyBlock*)a->memory_start;
     b->next = NULL;
     b->order = order;
     a->free_lists[order] = b;
@@ -56,6 +70,8 @@ Allocator* buddy_create(void *memory, size_t size) {
 
 void* buddy_alloc(Allocator *a, size_t size) {
     size_t order = size_to_order(size);
+    if (order == 0) return NULL;
+    
     size_t i = order;
 
     while (i <= MAX_ORDER && a->free_lists[i] == NULL) i++;
@@ -80,7 +96,7 @@ void* buddy_alloc(Allocator *a, size_t size) {
 }
 
 void buddy_free(Allocator *a, void *ptr) {
-    if (!ptr) return;
+    if (!ptr || !a) return;
 
     BuddyBlock *block = (BuddyBlock*)((char*)ptr - sizeof(BuddyBlock));
     size_t order = block->order;
@@ -88,19 +104,21 @@ void buddy_free(Allocator *a, void *ptr) {
     a->used_memory -= (1UL << order);
 
     while (order < MAX_ORDER) {
-        BuddyBlock **list = &a->free_lists[order];
-        BuddyBlock *prev = NULL;
-        BuddyBlock *cur = *list;
         BuddyBlock *buddy = get_buddy(a->memory_start, block);
+        BuddyBlock **list = &a->free_lists[order];
+        BuddyBlock *cur = *list;
+        BuddyBlock *prev = NULL;
         int merged = 0;
 
         while (cur) {
             if (cur == buddy) {
                 if (prev) prev->next = cur->next;
                 else *list = cur->next;
-
-                if ((uintptr_t)block > (uintptr_t)cur) block = cur;
-
+                
+                if ((uintptr_t)block > (uintptr_t)buddy) {
+                    block = buddy;
+                }
+                
                 order++;
                 block->order = order;
                 merged = 1;
@@ -121,5 +139,13 @@ size_t buddy_get_used_memory(Allocator *a) {
 }
 
 size_t buddy_get_free_memory(Allocator *a) {
-    return a->total_memory - a->used_memory;
+    size_t free_mem = 0;
+    for (int i = MIN_ORDER; i <= MAX_ORDER; i++) {
+        BuddyBlock *block = a->free_lists[i];
+        while (block) {
+            free_mem += (1UL << i);
+            block = block->next;
+        }
+    }
+    return free_mem;
 }
