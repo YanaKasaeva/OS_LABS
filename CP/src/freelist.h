@@ -3,7 +3,8 @@
 
 #include "allocator.h"
 
-Allocator* freelist_create(void *memory, size_t size);
+Allocator* freelist_create(size_t size);
+void freelist_destroy(Allocator *a);
 
 void* freelist_alloc(Allocator *a, size_t size);
 void  freelist_free(Allocator *a, void *ptr);

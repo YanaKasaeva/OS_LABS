@@ -3,8 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #define MEMORY_SIZE (1024*1024)
 #define N 10000
@@ -18,11 +16,19 @@ typedef struct {
 } Stats;
 
 static Stats test_allocator(const char *name,
-                            Allocator *A,
+                            Allocator* (*create_func)(size_t),
+                            void (*destroy_func)(Allocator*),
                             void* (*alloc_func)(Allocator*, size_t),
                             void  (*free_func)(Allocator*, void*),
                             size_t (*get_used)(Allocator*),
                             size_t (*get_free)(Allocator*)) {
+    
+    Allocator *A = create_func(MEMORY_SIZE);
+    if (!A) {
+        printf("%s: failed to create allocator\n", name);
+        return (Stats){0};
+    }
+    
     void *ptrs[N] = {0};
     size_t sizes[N];
     int successful_allocs = 0;
@@ -53,6 +59,8 @@ static Stats test_allocator(const char *name,
     }
     end = clock();
     s.free_time = (double)(end - start) / CLOCKS_PER_SEC;
+    
+    destroy_func(A);
 
     return s;
 }
@@ -60,47 +68,33 @@ static Stats test_allocator(const char *name,
 int main(void) {
     srand((unsigned)time(NULL));
 
-    size_t page_size = sysconf(_SC_PAGESIZE);
-    size_t aligned_size = ((MEMORY_SIZE + page_size - 1) / page_size) * page_size;
+    Stats s_ff = test_allocator("Free List", 
+                               freelist_create, freelist_destroy,
+                               freelist_alloc, freelist_free,
+                               freelist_get_used_memory, freelist_get_free_memory);
     
-    void *mem_ff = mmap(NULL, aligned_size, 
-                       PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    void *mem_bd = mmap(NULL, aligned_size,
-                       PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    
-    if (mem_ff == MAP_FAILED || mem_bd == MAP_FAILED) {
-        perror("mmap failed");
-        return 1;
-    }
+    Stats s_bd = test_allocator("Buddy",
+                               buddy_create, buddy_destroy,
+                               buddy_alloc, buddy_free,
+                               buddy_get_used_memory, buddy_get_free_memory);
 
-    Allocator *ff = freelist_create(mem_ff, aligned_size);
-    Allocator *bd = buddy_create(mem_bd, aligned_size);
+    printf("%-10s | %-11s | %-12s | %-12s | %-10s\n",
+           "Allocator", "Utilization", "Alloc Time", "Free Time", "Success");
+    printf("---------------------------------------------------------------------\n");
 
-    Stats s_ff = test_allocator("Free List", ff, freelist_alloc, freelist_free,
-                                freelist_get_used_memory, freelist_get_free_memory);
-    Stats s_bd = test_allocator("Buddy", bd, buddy_alloc, buddy_free,
-                                buddy_get_used_memory, buddy_get_free_memory);
-
-    printf("%-10s | %-11s | %-12s | %-12s\n",
-           "Allocator", "Utilization", "Alloc Time", "Free Time");
-    printf("-----------------------------------------------------\n");
-
-    printf("%-10s | %-10.2f%% | %-12.6f | %-12.6f\n",
+    printf("%-10s | %-10.2f%% | %-12.6f | %-12.6f | %-9.1f%%\n",
            "Free List",
-           100.0 * s_ff.used_mem / aligned_size,
+           100.0 * s_ff.used_mem / MEMORY_SIZE,
            s_ff.alloc_time,
-           s_ff.free_time);
+           s_ff.free_time,
+           100.0 * s_ff.successful_allocs / N);
 
-    printf("%-10s | %-10.2f%% | %-12.6f | %-12.6f\n",
+    printf("%-10s | %-10.2f%% | %-12.6f | %-12.6f | %-9.1f%%\n",
            "Buddy",
-           100.0 * s_bd.used_mem / aligned_size,
+           100.0 * s_bd.used_mem / MEMORY_SIZE,
            s_bd.alloc_time,
-           s_bd.free_time);
-
-    munmap(mem_ff, aligned_size);
-    munmap(mem_bd, aligned_size);
+           s_bd.free_time,
+           100.0 * s_bd.successful_allocs / N);
 
     return 0;
 }
